@@ -7,19 +7,17 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # --- 1. SYSTEM CONFIG ---
-st.set_page_config(page_title="OVERWATCH v4", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="OVERWATCH v4.2", page_icon="🛡️", layout="wide")
 
-# --- 2. DATABASE CONNECTION (DIRECT MODE) ---
+# --- 2. ROBUST DATABASE CONNECTION ---
 def connect_to_gsheet():
-    # Define the Scope
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
     
-    # Load Credentials from Streamlit Secrets
     try:
-        # We construct the credentials dictionary manually from secrets
+        # Construct credentials from Streamlit Secrets
         creds_dict = {
             "type": st.secrets["connections"]["gsheets"]["type"],
             "project_id": st.secrets["connections"]["gsheets"]["project_id"],
@@ -33,57 +31,71 @@ def connect_to_gsheet():
             "client_x509_cert_url": st.secrets["connections"]["gsheets"]["client_x509_cert_url"],
         }
         
-        credentials = Credentials.from_service_account_info(
-            creds_dict,
-            scopes=scopes
-        )
-        
+        credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         gc = gspread.authorize(credentials)
-        # Open by URL
         url = st.secrets["connections"]["gsheets"]["spreadsheet"]
-        sh = gc.open_by_url(url)
-        return sh
+        return gc.open_by_url(url)
     except Exception as e:
-        st.error(f"DATABASE ERROR: {e}")
+        st.error(f"🔐 AUTH ERROR: Could not verify credentials. Check Secrets. Error: {e}")
         st.stop()
 
-# Initialize API
+def get_or_create_worksheet(sh, name, headers):
+    """
+    Tries to find a worksheet. If it fails (typo/missing), creates it.
+    This prevents 'WorksheetNotFound' crashes.
+    """
+    try:
+        return sh.worksheet(name)
+    except:
+        # If missing, create it automatically
+        ws = sh.add_worksheet(title=name, rows=1000, cols=12)
+        ws.append_row(headers)
+        return ws
+
+# INITIALIZE SYSTEM
 try:
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
     sh = connect_to_gsheet()
-    worksheet_logs = sh.worksheet("Logs")
-    worksheet_timetable = sh.worksheet("Timetable")
+    
+    # SELF-HEALING: Auto-create tabs if they are missing
+    worksheet_logs = get_or_create_worksheet(sh, "Logs", ["Date", "Time", "Type", "Sector", "Subject", "Activity", "Duration", "Output", "Rot", "Focus", "Notes"])
+    worksheet_timetable = get_or_create_worksheet(sh, "Timetable", ["Day_Type", "Time_Slot", "Task"])
+    
 except Exception as e:
-    st.error(f"Connection Failed: {e}")
+    st.error(f"💥 FATAL ERROR: {e}")
     st.stop()
 
 # --- 3. LOGIC ENGINE ---
 def get_day_protocol():
     day_num = datetime.now().weekday()
-    if day_num in [0, 2, 4]: return "MWS Protocol"
-    elif day_num in [1, 3, 5]: return "TTS Protocol"
+    if day_num in [0, 2, 4]: return "MWS Protocol" # Mon, Wed, Fri
+    elif day_num in [1, 3, 5]: return "TTS Protocol" # Tue, Thu, Sat
     else: return "Sunday Special"
 
 def get_data():
-    # Get all values as list of lists
+    # Fetch all data safely
     data_logs = worksheet_logs.get_all_records()
     data_time = worksheet_timetable.get_all_records()
     
     df_logs = pd.DataFrame(data_logs)
     df_timetable = pd.DataFrame(data_time)
     
-    # Cleanup Dates
-    if not df_logs.empty:
+    # CRASH PREVENTION: Handle empty logs
+    if df_logs.empty:
+        df_logs = pd.DataFrame(columns=["Date", "Time", "Type", "Sector", "Subject", "Activity", "Duration", "Output", "Rot", "Focus", "Notes"])
+    else:
+        # Cleanup Types
         df_logs['Date'] = pd.to_datetime(df_logs['Date'], errors='coerce')
-        # Force numeric conversion for math columns
-        cols = ['Duration', 'Output', 'Rot', 'Focus']
-        for c in cols:
+        for c in ['Duration', 'Output', 'Rot', 'Focus']:
             df_logs[c] = pd.to_numeric(df_logs[c], errors='coerce').fillna(0)
+            
+    # CRASH PREVENTION: Handle empty timetable
+    if df_timetable.empty:
+        df_timetable = pd.DataFrame(columns=["Day_Type", "Time_Slot", "Task"])
             
     return df_logs, df_timetable
 
 def write_log(entry_data):
-    # Prepare row data in specific order
     row = [
         entry_data["Date"],
         entry_data["Time"],
@@ -102,13 +114,11 @@ def write_log(entry_data):
 def calculate_kpi(df):
     if df.empty: return 0, 0, 0
     today = pd.Timestamp.now().normalize()
-    # Filter for Metric logs only
     df_today = df[(df['Date'].dt.normalize() == today) & (df['Type'] == 'Metric')]
     
     if df_today.empty: return 0, 0, 0
     
     rot = int(df_today['Rot'].sum())
-    # EFS: (Duration * Focus/100) - (Rot * 1.5)
     efs = int(((df_today['Duration'] * (df_today['Focus']/100)) - (df_today['Rot'] * 1.5)).sum())
     
     hours = df_today['Duration'].sum() / 60
@@ -134,7 +144,6 @@ with st.sidebar:
     user_query = st.text_input("Consult Prime...", placeholder="Analyze my week...")
     
     if user_query:
-        # Load data for context
         df_logs, _ = get_data()
         stats = df_logs.tail(5).to_string() if not df_logs.empty else "No Data"
         
@@ -143,7 +152,6 @@ with st.sidebar:
         Current Protocol: {protocol}
         Recent Logs:
         {stats}
-        
         You are PRIME. Military tone. Concise.
         """
         
@@ -162,10 +170,12 @@ with st.sidebar:
 
 # MAIN DASHBOARD
 
+# Load Data Safely
 try:
     df_logs, df_timetable = get_data()
     rot, efs, vel = calculate_kpi(df_logs)
-except:
+except Exception as e:
+    st.error(f"DATA LOAD ERROR: {e}")
     df_logs = pd.DataFrame()
     df_timetable = pd.DataFrame()
     rot, efs, vel = 0, 0, 0
@@ -175,7 +185,7 @@ k1.metric("ROT (WASTED)", f"{rot} min", delta="Limit: 60", delta_color="inverse"
 k2.metric("EFS SCORE", f"{efs}", delta="Target: 480")
 k3.metric("VELOCITY", f"{vel}", help="Output per Hour")
 
-# LOGGING
+# LOGGING FORM
 with st.expander("📝 LOG DATA (TAP TO OPEN)", expanded=False):
     with st.form("log_entry"):
         col1, col2 = st.columns(2)
@@ -230,17 +240,21 @@ if not df_logs.empty:
 
     with tab_week:
         st.line_chart(df_logs, x="Date", y="Duration", color="Subject")
+else:
+    st.warning("No logs found. Start logging to see charts.")
 
 # TIMETABLE
 st.subheader(f"📅 Protocol: {protocol}")
 if not df_timetable.empty:
     # Filter roughly by protocol name in Day_Type
+    # Convert column to string to prevent crashes on weird data types
     today_schedule = df_timetable[df_timetable['Day_Type'].astype(str).str.contains(protocol.split()[0], case=False, na=False)]
     
     if not today_schedule.empty:
         st.dataframe(today_schedule[['Time_Slot', 'Task']], use_container_width=True, hide_index=True)
     else:
-        st.dataframe(df_timetable)
+        # Show all if filter finds nothing
+        st.dataframe(df_timetable, use_container_width=True)
 else:
-    st.info("Timetable empty.")
+    st.info("Timetable empty. Add rows in Google Sheets.")
     
