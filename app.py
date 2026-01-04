@@ -8,7 +8,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # --- 1. SYSTEM CONFIG ---
-st.set_page_config(page_title="OVERWATCH v7.1", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="OVERWATCH v7.2", page_icon="🛡️", layout="wide")
 
 # TIMEZONE CONFIG (INDIA)
 IST = pytz.timezone('Asia/Kolkata')
@@ -49,7 +49,6 @@ def get_or_create_worksheet(sh, name, headers):
 try:
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
     sh = connect_to_gsheet()
-    # Define worksheets globally
     worksheet_logs = get_or_create_worksheet(sh, "Logs", ["Date", "Time", "Type", "Sector", "Subject", "Activity", "Duration", "Output", "Rot", "Focus", "Notes"])
     worksheet_timetable = get_or_create_worksheet(sh, "Timetable", ["Day_Type", "Time_Slot", "Task"])
     worksheet_config = get_or_create_worksheet(sh, "Config", ["Category", "Item"])
@@ -63,20 +62,17 @@ def get_current_time():
 
 def get_day_protocol():
     day_num = get_current_time().weekday()
-    if day_num in [0, 2, 4]: return "MWS" # Simplified Code
+    if day_num in [0, 2, 4]: return "MWS"
     elif day_num in [1, 3, 5]: return "TTS"
     else: return "Sunday"
 
 def get_subjects():
-    # Force reload of data
     try:
         data = worksheet_config.get_all_records()
         df = pd.DataFrame(data)
-        
         defaults = ["Math", "Physics", "Chemistry", "Biology", "English", "GAT", "Python", "Chess"]
         
         if not df.empty and 'Category' in df.columns:
-            # Normalize strings to prevent "Math" vs "math " duplicates
             custom_subs = df[df['Category'] == 'Subject']['Item'].astype(str).str.strip().tolist()
             final_list = sorted(list(set(defaults + custom_subs)))
         else:
@@ -86,7 +82,6 @@ def get_subjects():
         return ["Math", "Physics", "Chemistry"]
 
 def add_new_subject(new_sub):
-    # Append new subject then force clear cache logic
     worksheet_config.append_row(["Subject", new_sub.strip()])
 
 def get_data():
@@ -115,10 +110,11 @@ def add_timetable_slot(day_type, time_slot, task):
 
 def calculate_kpi(df):
     if df.empty: return 0, 0, 0
-    today = get_current_time().normalize()
-    if df['Date'].dt.tz is None: pass 
+    # FIX: Removed .normalize() which caused the crash
+    today_date = get_current_time().date() 
     
-    df_today = df[(df['Date'].dt.date == today.date()) & (df['Type'] == 'Metric')]
+    # Filter for today's logs
+    df_today = df[(df['Date'].dt.date == today_date) & (df['Type'] == 'Metric')]
     
     if df_today.empty: return 0, 0, 0
     
@@ -177,9 +173,8 @@ k3.metric("VELOCITY", f"{vel}", help="Output per Hour")
 # TABS
 tab_log, tab_schedule, tab_visuals = st.tabs(["📝 LOG DATA", "📅 TIMETABLE", "📈 WAR ROOM"])
 
-# --- TAB 1: LOGGING ---
+# TAB 1: LOGGING
 with tab_log:
-    # ADD SUBJECT (FIXED)
     with st.expander("⚙️ Add New Subject"):
         c_sub1, c_sub2 = st.columns([3, 1])
         with c_sub1:
@@ -189,7 +184,6 @@ with tab_log:
                 if new_sub_input and new_sub_input not in subject_list:
                     add_new_subject(new_sub_input)
                     st.success(f"Added {new_sub_input}")
-                    # FORCE RELOAD TO UPDATE DROPDOWN
                     st.rerun()
                 elif new_sub_input in subject_list:
                     st.warning("Already exists.")
@@ -200,7 +194,7 @@ with tab_log:
         col1, col2 = st.columns(2)
         with col1:
             date_val = st.date_input("Date", value=current_now)
-            subject = st.selectbox("Subject", subject_list) # THIS NOW UPDATES INSTANTLY
+            subject = st.selectbox("Subject", subject_list)
             activity = st.selectbox("Activity", ["Deep Study", "Mock Test", "Revision", "Class"])
         with col2:
             duration = st.number_input("Duration (Min)", min_value=0, step=15)
@@ -228,13 +222,11 @@ with tab_log:
             st.success("SYNCED.")
             st.rerun()
 
-# --- TAB 2: TIMETABLE (FIXED FILTER) ---
+# TAB 2: TIMETABLE
 with tab_schedule:
     st.subheader("Current Protocol Orders")
-    
     if not df_timetable.empty:
-        # ROBUST FILTERING: Convert to string, lowercase, strip spaces
-        # This matches "MWS" in "MWS Protocol" or "mws "
+        # Filter Logic
         mask = df_timetable['Day_Type'].astype(str).str.lower().str.contains(protocol.lower().strip(), na=False)
         today_view = df_timetable[mask]
         
@@ -262,10 +254,10 @@ with tab_schedule:
             st.success(f"Added to {day_select}")
             st.rerun()
 
-# --- TAB 3: VISUALS ---
+# TAB 3: VISUALS
 with tab_visuals:
     if not df_logs.empty:
-        today = pd.Timestamp.now().normalize()
+        # FIX: Ensure chart uses IST date
         df_logs['Date_Only'] = pd.to_datetime(df_logs['Date']).dt.date
         today_data = df_logs[df_logs['Date_Only'] == current_now.date()]
         if not today_data.empty:
@@ -306,4 +298,4 @@ if prompt := st.chat_input("Ask Prime..."):
                 st.session_state.messages.append({"role": "assistant", "content": response})
             except Exception as e:
                 st.error(f"PRIME OFFLINE: {e}")
-            
+    
