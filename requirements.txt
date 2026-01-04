@@ -2,4 +2,6 @@ streamlit
 pandas
 plotly
 groq
-streamlit-gsheets
+gspread
+google-auth
+
