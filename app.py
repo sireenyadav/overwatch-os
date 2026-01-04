@@ -8,12 +8,12 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # --- 1. SYSTEM CONFIG ---
-st.set_page_config(page_title="OVERWATCH v6.0", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="OVERWATCH v7.1", page_icon="🛡️", layout="wide")
 
 # TIMEZONE CONFIG (INDIA)
 IST = pytz.timezone('Asia/Kolkata')
 
-# --- 2. DATABASE CONNECTION ---
+# --- 2. DATABASE CONNECTION (ROBUST) ---
 def connect_to_gsheet():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     try:
@@ -49,9 +49,9 @@ def get_or_create_worksheet(sh, name, headers):
 try:
     client = Groq(api_key=st.secrets["GROQ_API_KEY"])
     sh = connect_to_gsheet()
+    # Define worksheets globally
     worksheet_logs = get_or_create_worksheet(sh, "Logs", ["Date", "Time", "Type", "Sector", "Subject", "Activity", "Duration", "Output", "Rot", "Focus", "Notes"])
     worksheet_timetable = get_or_create_worksheet(sh, "Timetable", ["Day_Type", "Time_Slot", "Task"])
-    # NEW: Config sheet for Subjects
     worksheet_config = get_or_create_worksheet(sh, "Config", ["Category", "Item"])
 except Exception as e:
     st.error(f"💥 SYSTEM FAILURE: {e}")
@@ -63,44 +63,48 @@ def get_current_time():
 
 def get_day_protocol():
     day_num = get_current_time().weekday()
-    if day_num in [0, 2, 4]: return "MWS Protocol"
-    elif day_num in [1, 3, 5]: return "TTS Protocol"
-    else: return "Sunday Special"
+    if day_num in [0, 2, 4]: return "MWS" # Simplified Code
+    elif day_num in [1, 3, 5]: return "TTS"
+    else: return "Sunday"
 
 def get_subjects():
-    # Read subjects from Config sheet
-    data = worksheet_config.get_all_records()
-    df = pd.DataFrame(data)
-    
-    # Filter for 'Subject' category
-    if not df.empty and 'Category' in df.columns:
-        subjects = df[df['Category'] == 'Subject']['Item'].tolist()
-    else:
-        subjects = []
-
-    # Default fallbacks if empty
-    defaults = ["Math", "Physics", "Chemistry", "Biology", "English", "GAT", "Python", "Chess"]
-    
-    # Combine unique
-    final_list = sorted(list(set(defaults + subjects)))
-    return final_list
+    # Force reload of data
+    try:
+        data = worksheet_config.get_all_records()
+        df = pd.DataFrame(data)
+        
+        defaults = ["Math", "Physics", "Chemistry", "Biology", "English", "GAT", "Python", "Chess"]
+        
+        if not df.empty and 'Category' in df.columns:
+            # Normalize strings to prevent "Math" vs "math " duplicates
+            custom_subs = df[df['Category'] == 'Subject']['Item'].astype(str).str.strip().tolist()
+            final_list = sorted(list(set(defaults + custom_subs)))
+        else:
+            final_list = sorted(defaults)
+        return final_list
+    except:
+        return ["Math", "Physics", "Chemistry"]
 
 def add_new_subject(new_sub):
-    worksheet_config.append_row(["Subject", new_sub])
+    # Append new subject then force clear cache logic
+    worksheet_config.append_row(["Subject", new_sub.strip()])
 
 def get_data():
-    data_logs = worksheet_logs.get_all_records()
-    data_time = worksheet_timetable.get_all_records()
-    
-    df_logs = pd.DataFrame(data_logs)
-    df_timetable = pd.DataFrame(data_time)
-    
-    if not df_logs.empty:
-        df_logs['Date'] = pd.to_datetime(df_logs['Date'], errors='coerce')
-        for c in ['Duration', 'Output', 'Rot', 'Focus']:
-            df_logs[c] = pd.to_numeric(df_logs[c], errors='coerce').fillna(0)
-            
-    return df_logs, df_timetable
+    try:
+        data_logs = worksheet_logs.get_all_records()
+        data_time = worksheet_timetable.get_all_records()
+        
+        df_logs = pd.DataFrame(data_logs)
+        df_timetable = pd.DataFrame(data_time)
+        
+        if not df_logs.empty:
+            df_logs['Date'] = pd.to_datetime(df_logs['Date'], errors='coerce')
+            for c in ['Duration', 'Output', 'Rot', 'Focus']:
+                df_logs[c] = pd.to_numeric(df_logs[c], errors='coerce').fillna(0)
+                
+        return df_logs, df_timetable
+    except Exception as e:
+        return pd.DataFrame(), pd.DataFrame()
 
 def write_log(entry_data):
     row = list(entry_data.values())
@@ -126,13 +130,15 @@ def calculate_kpi(df):
 
 # --- 4. UI LAYOUT ---
 
-# --- TOP BAR HUD (THE HEADER) ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# HUD
 current_now = get_current_time()
 protocol = get_day_protocol()
 date_str = current_now.strftime('%d %B %Y')
 time_str = current_now.strftime('%H:%M IST')
 
-# Custom CSS for the HUD
 st.markdown(f"""
     <style>
     .hud-container {{
@@ -144,98 +150,49 @@ st.markdown(f"""
         margin-bottom: 20px;
         align-items: center;
     }}
-    .hud-title {{ font-size: 24px; font-weight: bold; color: white; }}
-    .hud-stats {{ text-align: right; color: #FAFAFA; }}
     .hud-time {{ font-size: 20px; font-weight: bold; color: #FF4B4B; font-family: monospace; }}
     .hud-protocol {{ font-size: 14px; color: #00FF00; letter-spacing: 1px; }}
     </style>
     <div class="hud-container">
-        <div class="hud-title">🛡️ OVERWATCH OS <span style="font-size:12px; opacity:0.7">v6.0</span></div>
-        <div class="hud-stats">
+        <div style="font-size: 24px; font-weight: bold;">🛡️ OVERWATCH OS</div>
+        <div style="text-align: right;">
             <div class="hud-time">{time_str}</div>
             <div>{date_str}</div>
-            <div class="hud-protocol">STATUS: {protocol.upper()}</div>
+            <div class="hud-protocol">PROTOCOL: {protocol}</div>
         </div>
     </div>
 """, unsafe_allow_html=True)
 
+# LOAD DATA
+df_logs, df_timetable = get_data()
+rot, efs, vel = calculate_kpi(df_logs)
+subject_list = get_subjects()
 
-# --- MAIN DASHBOARD LOGIC ---
-
-# 1. LOAD DATA
-try:
-    df_logs, df_timetable = get_data()
-    rot, efs, vel = calculate_kpi(df_logs)
-    subject_list = get_subjects() # Load subjects from config
-except:
-    df_logs, df_timetable = pd.DataFrame(), pd.DataFrame()
-    rot, efs, vel = 0, 0, 0
-    subject_list = ["Math", "Physics"]
-
-# 2. KPI METRICS
+# METRICS
 k1, k2, k3 = st.columns(3)
 k1.metric("ROT (WASTED)", f"{rot} min", delta="Limit: 60", delta_color="inverse")
 k2.metric("EFS SCORE", f"{efs}", delta="Target: 480")
 k3.metric("VELOCITY", f"{vel}", help="Output per Hour")
 
-st.divider()
-
-# 3. PRIME COMMAND CENTER (MAIN AREA)
-st.subheader("🧠 PRIME COMMAND CENTER")
-
-if st.button("🚨 ANALYZE SITUATION & COMMAND ME", type="primary", use_container_width=True):
-    with st.spinner("PRIME IS ANALYZING BIOMETRICS & LOGS..."):
-        stats_recent = df_logs.tail(5).to_string() if not df_logs.empty else "No Logs Today"
-        
-        # Schedule Context
-        sched_str = "No Schedule"
-        if not df_timetable.empty:
-            today_sched = df_timetable[df_timetable['Day_Type'].astype(str).str.contains(protocol.split()[0], case=False, na=False)]
-            sched_str = today_sched.to_string()
-
-        prompt = f"""
-        **SITUATION REPORT**
-        - Time: {time_str}
-        - Protocol: {protocol}
-        - Today's Stats: Rot={rot}m, EFS={efs}, Velocity={vel}
-        
-        **RECENT LOGS:**
-        {stats_recent}
-        
-        **SCHEDULE:**
-        {sched_str}
-        
-        **YOUR ORDERS:**
-        1. Compare Current Time to Schedule. Is user on track?
-        2. Analyze ROT. If > 20, roast them.
-        3. Give ONE specific command on what to do RIGHT NOW.
-        """
-        
-        try:
-            chat = client.chat.completions.create(
-                messages=[{"role": "system", "content": "You are PRIME. Ruthless. Military. Concise."}, 
-                          {"role": "user", "content": prompt}],
-                model="llama-3.3-70b-versatile"
-            )
-            st.success(chat.choices[0].message.content)
-        except Exception as e:
-            st.error(f"PRIME OFFLINE: {e}")
-
-# 4. TABS
+# TABS
 tab_log, tab_schedule, tab_visuals = st.tabs(["📝 LOG DATA", "📅 TIMETABLE", "📈 WAR ROOM"])
 
-# --- TAB 1: LOGGING & SUBJECTS ---
+# --- TAB 1: LOGGING ---
 with tab_log:
-    # SUBJECT MANAGER
-    with st.expander("⚙️ Manage Subjects (Add New)"):
-        new_sub_input = st.text_input("New Subject Name")
-        if st.button("Add to Database"):
-            if new_sub_input and new_sub_input not in subject_list:
-                add_new_subject(new_sub_input)
-                st.success(f"Added {new_sub_input}. Refreshing...")
-                st.rerun()
-            elif new_sub_input in subject_list:
-                st.warning("Subject already exists.")
+    # ADD SUBJECT (FIXED)
+    with st.expander("⚙️ Add New Subject"):
+        c_sub1, c_sub2 = st.columns([3, 1])
+        with c_sub1:
+            new_sub_input = st.text_input("Subject Name", label_visibility="collapsed", placeholder="e.g. History")
+        with c_sub2:
+            if st.button("Add Now"):
+                if new_sub_input and new_sub_input not in subject_list:
+                    add_new_subject(new_sub_input)
+                    st.success(f"Added {new_sub_input}")
+                    # FORCE RELOAD TO UPDATE DROPDOWN
+                    st.rerun()
+                elif new_sub_input in subject_list:
+                    st.warning("Already exists.")
 
     st.divider()
 
@@ -243,8 +200,7 @@ with tab_log:
         col1, col2 = st.columns(2)
         with col1:
             date_val = st.date_input("Date", value=current_now)
-            # DYNAMIC SUBJECT LIST HERE
-            subject = st.selectbox("Subject", subject_list)
+            subject = st.selectbox("Subject", subject_list) # THIS NOW UPDATES INSTANTLY
             activity = st.selectbox("Activity", ["Deep Study", "Mock Test", "Revision", "Class"])
         with col2:
             duration = st.number_input("Duration (Min)", min_value=0, step=15)
@@ -254,7 +210,7 @@ with tab_log:
         
         notes = st.text_input("Notes")
         
-        if st.form_submit_button("COMMIT LOG"):
+        if st.form_submit_button("COMMIT LOG", type="primary"):
             new_data = {
                 "Date": date_val.strftime("%Y-%m-%d"),
                 "Time": current_now.strftime("%H:%M:%S"),
@@ -272,40 +228,38 @@ with tab_log:
             st.success("SYNCED.")
             st.rerun()
 
-# --- TAB 2: TIMETABLE MANAGER ---
+# --- TAB 2: TIMETABLE (FIXED FILTER) ---
 with tab_schedule:
     st.subheader("Current Protocol Orders")
     
     if not df_timetable.empty:
-        filter_mask = df_timetable['Day_Type'].astype(str).str.contains(protocol.split()[0], case=False, na=False)
-        today_view = df_timetable[filter_mask]
+        # ROBUST FILTERING: Convert to string, lowercase, strip spaces
+        # This matches "MWS" in "MWS Protocol" or "mws "
+        mask = df_timetable['Day_Type'].astype(str).str.lower().str.contains(protocol.lower().strip(), na=False)
+        today_view = df_timetable[mask]
+        
         if not today_view.empty:
             st.dataframe(today_view, use_container_width=True, hide_index=True)
         else:
-            st.info(f"No slots found for {protocol}.")
-            st.dataframe(df_timetable) 
+            st.info(f"No specific tasks found for '{protocol}'. Showing all.")
+            st.dataframe(df_timetable, use_container_width=True) 
     else:
-        st.warning("Timetable Empty.")
+        st.warning("Timetable is empty.")
 
     st.divider()
-    
-    st.markdown("#### ➕ Add New Command Slot")
+    st.markdown("#### ➕ Add Command Slot")
     with st.form("add_slot"):
         c1, c2, c3 = st.columns(3)
         with c1:
-            day_select = st.selectbox("Protocol Day", ["MWS (Mon/Wed/Fri)", "TTS (Tue/Thu/Sat)", "Sunday"])
+            day_select = st.selectbox("Protocol Day", ["MWS", "TTS", "Sunday"])
         with c2:
-            time_select = st.text_input("Time Slot (e.g. 06:00 - 08:00)")
+            time_select = st.text_input("Time", placeholder="06:00 - 08:00")
         with c3:
-            task_select = st.text_input("Task (e.g. Physics - Optics)")
+            task_select = st.text_input("Task", placeholder="Physics - Optics")
             
         if st.form_submit_button("ADD SLOT"):
-            if "MWS" in day_select: d_code = "MWS"
-            elif "TTS" in day_select: d_code = "TTS"
-            else: d_code = "Sunday"
-            
-            add_timetable_slot(d_code, time_select, task_select)
-            st.success(f"Added {task_select} to {d_code}")
+            add_timetable_slot(day_select, time_select, task_select)
+            st.success(f"Added to {day_select}")
             st.rerun()
 
 # --- TAB 3: VISUALS ---
@@ -314,15 +268,42 @@ with tab_visuals:
         today = pd.Timestamp.now().normalize()
         df_logs['Date_Only'] = pd.to_datetime(df_logs['Date']).dt.date
         today_data = df_logs[df_logs['Date_Only'] == current_now.date()]
-        
         if not today_data.empty:
             st.bar_chart(today_data, x="Subject", y="Duration", color="Activity")
             st.dataframe(today_data[['Subject', 'Duration', 'Output', 'Rot']], use_container_width=True)
         else:
             st.info("No data for today.")
 
-# Sidebar cleanup
-with st.sidebar:
-    st.caption("Overwatch OS v6.0")
-    st.caption("Secure Link Established")
-    
+# --- PRIME CHAT ---
+st.divider()
+st.subheader("💬 PRIME UPLINK")
+
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+if prompt := st.chat_input("Ask Prime..."):
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    with st.chat_message("assistant"):
+        with st.spinner("Processing..."):
+            stats_recent = df_logs.tail(5).to_string() if not df_logs.empty else "No Logs"
+            full_prompt = f"""
+            User: {prompt}
+            Context: Time={time_str}, Protocol={protocol}, Rot={rot}, EFS={efs}.
+            Recent Logs: {stats_recent}
+            Act as PRIME: Military, tactical, concise.
+            """
+            try:
+                chat_completion = client.chat.completions.create(
+                    messages=[{"role": "user", "content": full_prompt}],
+                    model="llama-3.3-70b-versatile"
+                )
+                response = chat_completion.choices[0].message.content
+                st.markdown(response)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+            except Exception as e:
+                st.error(f"PRIME OFFLINE: {e}")
+            
