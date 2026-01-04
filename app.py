@@ -8,7 +8,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # --- 1. SYSTEM CONFIG ---
-st.set_page_config(page_title="OVERWATCH v7.2", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="OVERWATCH v8.0", page_icon="🛡️", layout="wide")
 
 # TIMEZONE CONFIG (INDIA)
 IST = pytz.timezone('Asia/Kolkata')
@@ -67,19 +67,22 @@ def get_day_protocol():
     else: return "Sunday"
 
 def get_subjects():
+    # STRICT MODE: Reads ONLY from Google Sheets (allows renaming/deleting)
     try:
         data = worksheet_config.get_all_records()
         df = pd.DataFrame(data)
-        defaults = ["Math", "Physics", "Chemistry", "Biology", "English", "GAT", "Python", "Chess"]
         
         if not df.empty and 'Category' in df.columns:
-            custom_subs = df[df['Category'] == 'Subject']['Item'].astype(str).str.strip().tolist()
-            final_list = sorted(list(set(defaults + custom_subs)))
+            # Filter for 'Subject', strip spaces, remove empty
+            subjects = df[df['Category'] == 'Subject']['Item'].astype(str).str.strip().tolist()
+            final_list = sorted(list(set([s for s in subjects if s])))
+            
+            if not final_list: return ["⚠️ Add Subjects in Config"]
+            return final_list
         else:
-            final_list = sorted(defaults)
-        return final_list
+            return ["⚠️ Add Subjects in Config"]
     except:
-        return ["Math", "Physics", "Chemistry"]
+        return ["Error Reading Sheet"]
 
 def add_new_subject(new_sub):
     worksheet_config.append_row(["Subject", new_sub.strip()])
@@ -110,10 +113,9 @@ def add_timetable_slot(day_type, time_slot, task):
 
 def calculate_kpi(df):
     if df.empty: return 0, 0, 0
-    # FIX: Removed .normalize() which caused the crash
     today_date = get_current_time().date() 
     
-    # Filter for today's logs
+    # Filter for today's logs safely
     df_today = df[(df['Date'].dt.date == today_date) & (df['Type'] == 'Metric')]
     
     if df_today.empty: return 0, 0, 0
@@ -164,6 +166,46 @@ df_logs, df_timetable = get_data()
 rot, efs, vel = calculate_kpi(df_logs)
 subject_list = get_subjects()
 
+# --- TOP AI: THE COMMANDER ---
+# This checks logs/time/schedule and gives a SINGLE command
+st.subheader("📍 TACTICAL DIRECTIVE")
+if st.button("GET ORDERS (WHAT SHOULD I DO?)", type="primary", use_container_width=True):
+    with st.spinner("CALCULATING OPTIMAL PATH..."):
+        # Gather Intelligence
+        sched_context = "No specific schedule found."
+        if not df_timetable.empty:
+            mask = df_timetable['Day_Type'].astype(str).str.lower().str.contains(protocol.lower().strip(), na=False)
+            today_sched = df_timetable[mask]
+            if not today_sched.empty:
+                sched_context = today_sched.to_string(index=False)
+        
+        prompt = f"""
+        **CURRENT STATUS:**
+        - Time: {time_str}
+        - Protocol: {protocol}
+        - Wasted Time (Rot): {rot} mins (Critical if > 60)
+        - Performance: EFS {efs}, Velocity {vel}
+        
+        **SCHEDULE:**
+        {sched_context}
+        
+        **MISSION:**
+        Compare the current time to the schedule. Look at wasted time.
+        Give a SINGLE, DIRECT command on what the user should be doing RIGHT NOW.
+        Be ruthless. No fluff. If they are wasting time, call it out.
+        """
+        try:
+            chat = client.chat.completions.create(
+                messages=[{"role": "system", "content": "You are a Military Commander. Give short, direct orders."}, 
+                          {"role": "user", "content": prompt}],
+                model="llama-3.3-70b-versatile"
+            )
+            st.warning(f"🗣️ **COMMANDER:** {chat.choices[0].message.content}")
+        except:
+            st.error("Commander Offline.")
+
+st.divider()
+
 # METRICS
 k1, k2, k3 = st.columns(3)
 k1.metric("ROT (WASTED)", f"{rot} min", delta="Limit: 60", delta_color="inverse")
@@ -178,7 +220,7 @@ with tab_log:
     with st.expander("⚙️ Add New Subject"):
         c_sub1, c_sub2 = st.columns([3, 1])
         with c_sub1:
-            new_sub_input = st.text_input("Subject Name", label_visibility="collapsed", placeholder="e.g. History")
+            new_sub_input = st.text_input("Subject Name", label_visibility="collapsed", placeholder="e.g. Ancient History")
         with c_sub2:
             if st.button("Add Now"):
                 if new_sub_input and new_sub_input not in subject_list:
@@ -224,9 +266,8 @@ with tab_log:
 
 # TAB 2: TIMETABLE
 with tab_schedule:
-    st.subheader("Current Protocol Orders")
+    st.subheader(f"Orders for {protocol}")
     if not df_timetable.empty:
-        # Filter Logic
         mask = df_timetable['Day_Type'].astype(str).str.lower().str.contains(protocol.lower().strip(), na=False)
         today_view = df_timetable[mask]
         
@@ -257,7 +298,7 @@ with tab_schedule:
 # TAB 3: VISUALS
 with tab_visuals:
     if not df_logs.empty:
-        # FIX: Ensure chart uses IST date
+        # Use simple date comparison (Fixes the crash)
         df_logs['Date_Only'] = pd.to_datetime(df_logs['Date']).dt.date
         today_data = df_logs[df_logs['Date_Only'] == current_now.date()]
         if not today_data.empty:
@@ -266,9 +307,9 @@ with tab_visuals:
         else:
             st.info("No data for today.")
 
-# --- PRIME CHAT ---
+# --- BOTTOM AI: THE CORTEX ---
 st.divider()
-st.subheader("💬 PRIME UPLINK")
+st.subheader("💬 PRIME CORTEX (ADVISOR)")
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -283,10 +324,15 @@ if prompt := st.chat_input("Ask Prime..."):
         with st.spinner("Processing..."):
             stats_recent = df_logs.tail(5).to_string() if not df_logs.empty else "No Logs"
             full_prompt = f"""
-            User: {prompt}
-            Context: Time={time_str}, Protocol={protocol}, Rot={rot}, EFS={efs}.
+            User Query: {prompt}
+            System Context: Time={time_str}, Protocol={protocol}, Rot={rot}, EFS={efs}.
             Recent Logs: {stats_recent}
-            Act as PRIME: Military, tactical, concise.
+            
+            INSTRUCTIONS:
+            - You are PRIME (Personal AI).
+            - If the user asks about schedule/logs, use the context provided.
+            - If the user asks general knowledge (Physics, Code, etc.), answer as a Tutor.
+            - Be tactical and precise.
             """
             try:
                 chat_completion = client.chat.completions.create(
@@ -298,4 +344,4 @@ if prompt := st.chat_input("Ask Prime..."):
                 st.session_state.messages.append({"role": "assistant", "content": response})
             except Exception as e:
                 st.error(f"PRIME OFFLINE: {e}")
-    
+            
